@@ -21,6 +21,3 @@ chrono = "0.4"
 regex = "1"
 serde_json = "1"
 # chrono-tz = "0.5.3"
-
-[features]
-small_grammar = []

@@ -144,27 +144,6 @@ as of the moment, these are the rules:
         through => [["up through", "through", "thru"]] | r("-+")
 ```
 
-# Pay Periods
-
-I'm writing this library in anticipation of, for the sake of amusement, rewriting [JobLog](https://metacpan.org/pod/App::JobLog)
-in Rust. This means I need the time expressions parsed to include pay periods. Pay periods, though,
-are defined relative to some reference date -- a particular Sunday, say -- and have a variable period.
-`two_timer`, and JobLog, assume pay periods are of a fixed length and tile the timeline without overlap, so a
-pay period of a calendrical month is problematic.
-
-If you need to interpret "last pay period", say, you will need to specify when this pay period began, or
-when some pay period began or will begin, and a pay period length in days. The `parse` function has a second
-optional argument, a `Config` object, whose chief function outside of testing is to provide this information. So,
-for example, you could do this:
-
-```rust
-# extern crate two_timer;
-# use two_timer::{parse, Config};
-let (reference_time, _, _) = parse("5/6/69", None).unwrap();
-let config = Config::new().pay_period_start(Some(reference_time.date()));
-let (t1, t2, _) = parse("next pay period", Some(config)).unwrap();
-```
-
 # Ambiguous Year Formats
 
 `two_timer` will try various year-month-day permutations until one of them parses given that days are in the range 1-31 and
@@ -211,7 +190,6 @@ only the typical expressions used with JobLog, falling back on the full grammar 
    * this month
    * last week
    * this year
-   * this pay period
    * last Monday
 4. Certain temporal adverbs
    * now
@@ -268,7 +246,7 @@ lazy_static! {
 
         modified_period -> <modifier>? <modifiable_period>
 
-        modifiable_period => [["week", "month", "year", "pay period", "payperiod", "pp", "weekend"]] | <a_month> | <a_day>
+        modifiable_period => [["week", "month", "year", "weekend"]] | <a_month> | <a_day>
 
         month_and_year -> <a_month> <year>
 
@@ -304,8 +282,8 @@ lazy_static! {
         n_date -> <n_month> r("[./-]") <n_day>   r("[./-]") <year>
         n_date -> <n_day>   r("[./-]") <n_month> r("[./-]") <year>
 
-        a_date -> <day_prefix>? <a_month> <o_n_day> (",") <year>
-        a_date -> <day_prefix>? <n_day> <a_month> <year>
+        a_date -> <day_prefix>? <a_month> <o_n_day> (",")? <year>
+        a_date -> <day_prefix>? <o_n_day> <a_month> (",")? <year>
         a_date -> <day_prefix>? ("the") <o_day> ("of") <a_month> <year>
 
         day_prefix => <a_day> (",")?
@@ -336,7 +314,7 @@ lazy_static! {
 
         day_and_month -> <n_month> r("[./-]") <n_day>     // 5-6
         day_and_month -> <a_month> ("the")? <o_n_day>     // June 5, June 5th, June fifth, June the fifth
-        day_and_month -> ("the") <o_day> ("of") <a_month> // the 5th of June, the fifth of June
+        day_and_month -> ("the")? <o_day> ("of")? <a_month> // the 5th of June, the fifth of June
 
         o_n_day => <n_day> | <o_day>
 
@@ -515,82 +493,6 @@ lazy_static! {
     pub static ref MATCHER: Matcher = GRAMMAR.matcher().unwrap();
 }
 
-lazy_static! {
-    // making this public is useful for testing, but best to keep it hidden to
-    // limit complexity and commitment
-    #[doc(hidden)]
-    // this is a stripped-down version of GRAMMAR that just containst the most commonly used expressions
-    pub static ref SMALL_GRAMMAR: Grammar = grammar!{
-        (?ibBw)
-
-        TOP -> r(r"\A") <time_expression> r(r"\z")
-
-        // non-terminal patterns
-        // these are roughly ordered by dependency
-
-        time_expression => <particular>
-
-        particular => <one_time>
-
-        one_time => <moment_or_period>
-
-        moment_or_period => <moment> | <period>
-
-        period => <named_period> | <specific_period>
-
-        specific_period => <modified_period>
-
-        modified_period -> <modifier>? <modifiable_period>
-
-        modifiable_period => [["week", "month", "year", "pay period", "pp"]] | <a_month> | <a_day>
-
-        named_period => <a_day> | <a_month>
-
-        moment -> <point_in_time>
-
-        point_in_time -> <some_day>
-
-        some_day => <specific_day> | <relative_day>
-
-        specific_day => <adverb>
-
-        relative_day => <a_day>
-
-        // terminal patterns
-        // these are organized into single-line and multi-line patterns, with each group alphabetized
-
-        // various phrases all meaning from the first measurable moment to the last
-        adverb          => [["now", "today", "yesterday"]]
-        modifier        => [["the", "this", "last"]]
-
-        a_day => [
-                "Sunday Monday Tuesday Wednesday Thursday Friday Saturday Tues Weds Thurs Tues. Weds. Thurs."
-                    .split(" ")
-                    .into_iter()
-                    .flat_map(|w| vec![
-                        w.to_string(),
-                        w[0..2].to_string(),
-                        w[0..3].to_string(),
-                        format!("{}.", w[0..2].to_string()),
-                        format!("{}.", w[0..3].to_string()),
-                    ])
-                    .collect::<Vec<_>>()
-            ]
-        a_month => [
-                "January February March April May June July August September October November December"
-                     .split(" ")
-                     .into_iter()
-                     .flat_map(|w| vec![w.to_string(), w[0..3].to_string()])
-                     .collect::<Vec<_>>()
-            ]
-    };
-}
-
-lazy_static! {
-    #[doc(hidden)]
-    pub static ref SMALL_MATCHER : Matcher = SMALL_GRAMMAR.matcher().unwrap();
-}
-
 /// Simply returns whether the given phrase is parsable as a time expression. This is slightly
 /// more efficient than `parse(expression, None).is_ok()` as no parse tree is generated.
 ///
@@ -602,18 +504,13 @@ lazy_static! {
 /// let copacetic = parsable("5/6/69");
 /// ```
 pub fn parsable(phrase: &str) -> bool {
-    if cfg!(feature = "small_grammar") {
-        SMALL_MATCHER.rx.is_match(phrase) || MATCHER.rx.is_match(phrase)
-    } else {
-        MATCHER.rx.is_match(phrase)
-    }
+    MATCHER.rx.is_match(phrase)
 }
 
 /// Converts a time expression into a pair or timestamps and a boolean indicating whether
 /// the expression was literally a range, such as "9 to 11", as opposed to "9 AM", say.
 ///
-/// The second parameter is an optional `Config` object. In general you will not need to
-/// use this except in testing or in the interpretation of pay periods.
+/// The second parameter is a `Config` object.
 ///
 /// # Examples
 ///
@@ -626,13 +523,7 @@ pub fn parse<T: TimeZone>(
     phrase: &str,
     config: Config<T>,
 ) -> Result<(DateTime<T>, DateTime<T>, bool), TimeError> {
-    let parse = if cfg!(feature = "small_grammar") {
-        SMALL_MATCHER
-            .parse(phrase)
-            .or_else(|| MATCHER.parse(phrase))
-    } else {
-        MATCHER.parse(phrase)
-    };
+    let parse = MATCHER.parse(phrase);
     if parse.is_none() {
         return Err(TimeError::Parse(format!(
             "could not parse \"{}\" as a time expression",
@@ -795,8 +686,6 @@ pub struct Config<T: TimeZone> {
     now: DateTime<T>,
     monday_starts_week: bool,
     period: Period,
-    pay_period_length: u32,
-    pay_period_start: Option<Date<T>>,
     default_to_past: bool,
     select_instant: bool,
 }
@@ -808,8 +697,6 @@ impl<T: TimeZone> Config<T> {
             now: d,
             monday_starts_week: true,
             period: Period::Minute,
-            pay_period_length: 7,
-            pay_period_start: None,
             default_to_past: true,
             select_instant: false,
         }
@@ -842,23 +729,6 @@ impl<T: TimeZone> Config<T> {
     /// parameter is set to `false`, Sunday will be regarded as the first weekday.
     pub fn monday_starts_week(mut self, monday_starts_week: bool) -> Self {
         self.monday_starts_week = monday_starts_week;
-
-        self
-    }
-    /// Returns a copy of the configuration parameters with the pay period
-    /// length in days set to the parameter supplied. The default pay period
-    /// length is 7 days.
-    pub fn pay_period_length(mut self, pay_period_length: u32) -> Self {
-        self.pay_period_length = pay_period_length;
-
-        self
-    }
-    /// Returns a copy of the configuration parameters with the reference start
-    /// date for a pay period set to the parameter supplied. By default this date
-    /// is undefined. Unless it is defined, expressions containing the phrase "pay period"
-    /// or "pp" cannot be interpreted.
-    pub fn pay_period_start(mut self, pay_period_start: Option<Date<T>>) -> Self {
-        self.pay_period_start = pay_period_start;
 
         self
     }
@@ -931,9 +801,6 @@ pub enum TimeError {
     /// The time expression specifies a weekday different from that required by the rest
     /// of the expression, such as Wednesday, May 5, 1969, which was a Tuesday.
     Weekday(String),
-    /// The time expression refers to a pay period, but the starting date of a reference
-    /// pay period has not been provided, so the pay period is undefined.
-    NoPayPeriod(String),
 }
 
 impl TimeError {
@@ -944,7 +811,6 @@ impl TimeError {
             TimeError::Misordered(s) => s.as_ref(),
             TimeError::ImpossibleDate(s) => s.as_ref(),
             TimeError::Weekday(s) => s.as_ref(),
-            TimeError::NoPayPeriod(s) => s.as_ref(),
         }
     }
 }
@@ -1207,21 +1073,6 @@ fn handle_specific_period<T: TimeZone>(
                 };
                 Ok(moment_to_period(d, &Period::Year, config))
             }
-            ModifiablePeriod::PayPeriod => {
-                if config.pay_period_start.is_some() {
-                    let (d, _) = moment_to_period(config.now.clone(), &Period::PayPeriod, config);
-                    let d = match modifier {
-                        PeriodModifier::Next => d + Duration::days(config.pay_period_length as i64),
-                        PeriodModifier::Last => d - Duration::days(config.pay_period_length as i64),
-                        PeriodModifier::This => d,
-                    };
-                    Ok(moment_to_period(d, &Period::PayPeriod, config))
-                } else {
-                    Err(TimeError::NoPayPeriod(String::from(
-                        "no pay period start date provided",
-                    )))
-                }
-            }
         };
     }
     if let Some(moment) = moment.name("year") {
@@ -1239,7 +1090,6 @@ enum ModifiablePeriod {
     Week,
     Month,
     Year,
-    PayPeriod,
     Weekend,
 }
 
@@ -1255,7 +1105,6 @@ impl ModifiablePeriod {
             }
             'm' | 'M' => ModifiablePeriod::Month,
             'y' | 'Y' => ModifiablePeriod::Year,
-            'p' | 'P' => ModifiablePeriod::PayPeriod,
             _ => unreachable!(),
         }
     }
@@ -1829,21 +1678,6 @@ fn moment_to_period<T: TimeZone>(
                 );
                 (d1.clone(), d1 + Duration::seconds(1))
             }
-            Period::PayPeriod => {
-                if let Some(pps) = &config.pay_period_start {
-                    // find the current pay period start
-                    let offset = now.num_days_from_ce() - pps.num_days_from_ce();
-                    let ppl = config.pay_period_length as i32;
-                    let mut offset = (offset % ppl) as i64;
-                    if offset < 0 {
-                        offset += config.pay_period_length as i64;
-                    }
-                    let d1 = (now.date() - Duration::days(offset)).and_hms(0, 0, 0);
-                    (d1.clone(), d1 + Duration::days(config.pay_period_length as i64))
-                } else {
-                    unreachable!()
-                }
-            }
         }
     } else {
         (now.clone(), now + Duration::seconds(1))
@@ -1859,7 +1693,6 @@ enum Period {
     Hour,
     Minute,
     Second,
-    PayPeriod,
 }
 
 fn weekday(s: &str) -> Weekday {
